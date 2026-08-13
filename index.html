@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tetragon — архитектурное исследование в терминах DDD</title>
+<meta name="description" content="Разбор cilium/tetragon (eBPF security observability для Kubernetes): карта bounded context'ов, метод «2 мозга», путь события execve сквозь систему, побайтовый формат BPF-байткода, находка про мёртвый код агрегатора.">
+<meta property="og:title" content="tetragon — архитектурное исследование">
+<meta property="og:description" content="5 раундов исследования методом «2 мозга»: DDD-карта, диаграммы, переносимость между ядрами, VM-тесты, модель угроз, побайтовый формат селекторов.">
+<meta property="og:type" content="article">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232454c7'/><path d='M3 8h4l1.5-3L10 12l1.5-4H13' stroke='%23fff' stroke-width='1.4' fill='none'/></svg>">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body { margin: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  :root {
+    --paper:      #f2f4f7;
+    --surface:    #ffffff;
+    --plate:      #eaeef3;
+    --ink:        #12181f;
+    --ink-2:      #47525e;
+    --ink-3:      #7c8794;
+    --line:       #dde2e8;
+    --rule:       #c7ced6;
+    --accent:     #2454c7;
+    --accent-2:   #5b8aef;
+    --ok:         #1f8a5f;
+    --ok-soft:    #dcf3e7;
+    --warn:       #a3690f;
+    --warn-soft:  #f6ead0;
+    --crit:       #b13a2e;
+    --crit-soft:  #f8dfdb;
+    --console-bg: #0c1220;
+    --console-ink:#cbd6e6;
+    --console-dim:#5f6d82;
+
+    --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --f-sans: -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --maxw: 900px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0d1117;
+      --surface:    #141a23;
+      --plate:      #171e29;
+      --ink:        #e6ecf5;
+      --ink-2:      #a7b3c2;
+      --ink-3:      #74808f;
+      --line:       #232b38;
+      --rule:       #2e3948;
+      --accent:     #5b8aef;
+      --accent-2:   #7fa6ff;
+      --ok:         #46bd84;
+      --ok-soft:    #133024;
+      --warn:       #d99a3a;
+      --warn-soft:  #2b2314;
+      --crit:       #e0685c;
+      --crit-soft:  #301b18;
+      --console-bg: #090d15;
+      --console-ink:#cbd6e6;
+      --console-dim:#586576;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0d1117;
+    --surface:    #141a23;
+    --plate:      #171e29;
+    --ink:        #e6ecf5;
+    --ink-2:      #a7b3c2;
+    --ink-3:      #74808f;
+    --line:       #232b38;
+    --rule:       #2e3948;
+    --accent:     #5b8aef;
+    --accent-2:   #7fa6ff;
+    --ok:         #46bd84;
+    --ok-soft:    #133024;
+    --warn:       #d99a3a;
+    --warn-soft:  #2b2314;
+    --crit:       #e0685c;
+    --crit-soft:  #301b18;
+    --console-bg: #090d15;
+    --console-ink:#cbd6e6;
+    --console-dim:#586576;
+  }
+
+  body { background: var(--paper); color: var(--ink); font-family: var(--f-sans);
+    line-height: 1.6; -webkit-font-smoothing: antialiased; font-size: 16px; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+  .mono { font-family: var(--f-mono); }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.15; margin: 0; }
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  .eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .lead { color: var(--ink-2); max-width: 68ch; }
+
+  .themebtn { position: fixed; top: 14px; right: 14px; z-index: 10; background: var(--surface);
+    border: 1px solid var(--rule); color: var(--ink); width: 36px; height: 36px;
+    border-radius: 9px; cursor: pointer; font-size: 16px; }
+
+  header { padding: 56px 0 40px; }
+  .kicker { display: flex; align-items: center; gap: 10px; font-family: var(--f-mono); font-size: 12px;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .kicker b { color: var(--accent); font-weight: 600; }
+  h1 { font-size: clamp(32px, 6vw, 54px); font-weight: 700; letter-spacing: -.02em; margin: 16px 0 0; }
+  h1 .dim { color: var(--ink-3); font-weight: 400; }
+  .subtitle { margin-top: 14px; font-size: clamp(16px, 2.1vw, 18px); color: var(--ink-2); max-width: 66ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .chip { font-family: var(--f-mono); font-size: 12px; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--rule); background: var(--surface); color: var(--ink-2); }
+  .chip.hot { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+
+  h2 { font-size: clamp(22px, 3.2vw, 28px); font-weight: 660; letter-spacing: -.01em; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
+  .sec-head .eyebrow { margin-left: auto; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; }
+  .stat .v { font-family: var(--f-mono); font-size: 25px; font-weight: 660; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums; color: var(--ink); }
+  .stat .k { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-3); margin-top: 4px; }
+
+  .console { background: var(--console-bg); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; }
+  .console pre { margin: 0; font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5;
+    white-space: pre; color: var(--console-ink); }
+  .console-note { margin: 10px 0 0; color: var(--ink-3); font-size: 14px; max-width: 70ch; }
+
+  .flow { display: grid; grid-template-columns: 1fr; gap: 2px; }
+  .step { display: grid; grid-template-columns: auto 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .step:last-child { border-bottom: 0; }
+  .step .n { font-family: var(--f-mono); font-size: 13px; color: var(--surface); background: var(--accent);
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; margin-top: 2px; }
+  .step .body b { font-family: var(--f-mono); font-size: 14px; }
+  .step .body .where { font-family: var(--f-mono); font-size: 12px; color: var(--ink-3); }
+  .step .body p { margin: 3px 0 0; color: var(--ink-2); font-size: 14.5px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; padding: 18px 20px; }
+  .card.crit { border-left: 3px solid var(--crit); }
+  .card.warn { border-left: 3px solid var(--warn); }
+  .card.ok { border-left: 3px solid var(--ok); }
+  .card h3 { font-size: 15.5px; font-family: var(--f-mono); font-weight: 660; margin-bottom: 6px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 14.5px; }
+  .card code { font-family: var(--f-mono); font-size: 12.5px; background: var(--plate);
+    padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tbl th, .tbl td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tbl th { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; }
+  .tbl td.mono { font-family: var(--f-mono); }
+  .pill { display: inline-block; font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 3px 9px;
+    border-radius: 20px; white-space: nowrap; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.crit { background: var(--crit-soft); color: var(--crit); }
+
+  .feynman-box { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 10px; padding: 20px 22px; }
+  .feynman-box p { color: var(--ink-2); }
+  .feynman-box .punch { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--rule);
+    color: var(--ink); font-size: 15px; }
+  .feynman-box .punch b { color: var(--accent); }
+
+  footer { padding: 34px 0 60px; color: var(--ink-3); font-family: var(--f-mono); font-size: 12.5px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: center; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+  .back { font-family: var(--f-mono); font-size: 13px; }
+  .back a { color: var(--accent); text-decoration: none; }
+  .back a:hover { text-decoration: underline; }
+
+  @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<button class="themebtn" id="themeToggle" aria-label="Переключить тему">◐</button>
+<script>
+  (function(){
+    var r=document.documentElement, k='tetragon-atlas-theme', s=null;
+    try{s=localStorage.getItem(k)}catch(e){}
+    if(s==='dark'||s==='light')r.setAttribute('data-theme',s);
+    document.getElementById('themeToggle').addEventListener('click',function(){
+      var dark=r.getAttribute('data-theme')==='dark'||
+        (!r.hasAttribute('data-theme')&&matchMedia('(prefers-color-scheme: dark)').matches);
+      var next=dark?'light':'dark';
+      r.setAttribute('data-theme',next);
+      try{localStorage.setItem(k,next)}catch(e){}
+    });
+  })();
+</script>
+
+<header>
+  <div class="wrap">
+    <p class="back"><a href="https://yunusovt983-art.github.io/#hive">← архитектурные атласы</a></p>
+    <div class="kicker" style="margin-top:14px"><b>Внешний проект</b> · архитектурное исследование <span style="color:var(--ink-3)">/ cilium/tetragon</span></div>
+    <h1>tetragon <span class="dim">— eBPF · Go · DDD</span></h1>
+    <p class="subtitle">Security observability и runtime enforcement для Kubernetes на eBPF.
+      Пять раундов исследования кодовой базы: карта bounded context'ов в терминах Domain-Driven
+      Design, сквозной путь события через систему, побайтовый формат BPF-байткода — и метод
+      «2 мозга»: независимые прочтения кода, сверенные друг с другом.</p>
+    <div class="chips">
+      <span class="chip hot">метод «2 мозга»</span>
+      <span class="chip">5 раундов исследования</span>
+      <span class="chip">DDD · bounded contexts</span>
+      <span class="chip">HLD в ANSI</span>
+      <span class="chip">метод Фейнмана</span>
+      <span class="chip">16 280 файлов</span>
+    </div>
+  </div>
+</header>
+
+<section style="border-top:0;padding-top:0">
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><div class="v">8</div><div class="k">bounded context'ов</div></div>
+      <div class="stat"><div class="v">5</div><div class="k">раундов исследования</div></div>
+      <div class="stat"><div class="v">10</div><div class="k">диаграмм Mermaid</div></div>
+      <div class="stat"><div class="v">3×</div><div class="k">находка подтверждена независимо</div></div>
+      <div class="stat"><div class="v">1</div><div class="k">core domain</div></div>
+      <div class="stat"><div class="v">1a4ef97</div><div class="k">исследованный коммит</div></div>
+    </div>
+    <p class="lead" style="margin-top:20px">Источник — статический анализ дерева исходников,
+      без динамической трассировки. Каждое утверждение привязано к файлу и строке; там, где два
+      независимых прохода расходились, расхождение перепроверялось вручную по исходникам.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Архитектура — ANSI</h2>
+      <span class="eyebrow">HLD · псевдографика 72 кол.</span>
+    </div>
+    <p class="lead">Единственный настоящий core domain — модель процесса в памяти
+      (<span class="mono">pkg/process</span>): дерево живых процессов с GC, обогащённое
+      метаданными Kubernetes. Всё остальное — supporting- и generic-поддомены вокруг неё.</p>
+    <div class="console"><pre>┌─ L0 · СИСТЕМНЫЙ КОНТЕКСТ ────────────────────────────────────────────┐
+│                                                                      │
+│  execve() в контейнере                                               │
+│      │ kprobe/tracepoint (ядро)                                      │
+│      v                                                               │
+│    ┌──────────────────────────────────────────────────────────────┐  │
+│    │          eBPF-программа в ядре — фильтрует и решает          │  │
+│    │                         ДО userspace                         │  │
+│    └──────────────────────────────────────────────────────────────┘  │
+│      │ ring buffer                                                   │
+│      v                                                               │
+│    ┌──────────────────────────────────────────────────────────────┐  │
+│    │             tetragon (агент, Go): process cache,             │  │
+│    │                   k8s-обогащение, gRPC API                   │  │
+│    └──────────────────────────────────────────────────────────────┘  │
+│      │ gRPC                   │ JSON                                 │
+│      v                         v                                     │
+│  tetra CLI / клиенты     экспорт на диск                             │
+│                                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│  Решение «интересно/опасно» принимается ВНУТРИ ядра —                │
+│  поэтому один и тот же механизм даёт и дешёвое                       │
+│  наблюдение, и мгновенный блок в реальном времени.                   │
+└──────────────────────────────────────────────────────────────────────┘</pre></div>
+    <p class="console-note">Полная карта — 8 bounded context'ов, стратегическая DDD-классификация
+      (core/supporting/generic/interface), тактические паттерны (aggregate root, ACL, OHS) —
+      в интерактивном артефакте (ссылка в футере).</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Сквозной путь execve</h2>
+      <span class="eyebrow">от ядра до JSON</span>
+    </div>
+    <div class="flow">
+      <div class="step">
+        <span class="n">1</span>
+        <div class="body"><b>bpf_execve_event.c</b> <span class="where">ядро</span>
+          <p>execve() перехвачен на tracepoint-хуке, событие упаковывается в ring buffer —
+          решение «интересно ли это» уже принято здесь, до выхода из ядра.</p></div>
+      </div>
+      <div class="step">
+        <span class="n">2</span>
+        <div class="body"><b>pkg/observer</b> <span class="where">userspace, Go</span>
+          <p>Читает сырые байты из ring/perf buffer, диспетчерит по опкоду.</p></div>
+      </div>
+      <div class="step">
+        <span class="n">3</span>
+        <div class="body"><b>pkg/process</b> <span class="where">core domain · aggregate root</span>
+          <p>Создаёт/обновляет запись в GC'd LRU-кэше процессов; обогащает через
+          <span class="mono">watcher.PodAccessor</span> — anti-corruption layer к Kubernetes API.</p></div>
+      </div>
+      <div class="step">
+        <span class="n">4</span>
+        <div class="body"><b>pkg/eventcache</b> <span class="where">retry-координация</span>
+          <p>Если метаданные пода ещё не подъехали от k8s-информера — ждёт до 15 тиков по 2с,
+          затем best-effort эмитит событие без полного обогащения.</p></div>
+      </div>
+      <div class="step">
+        <span class="n">5</span>
+        <div class="body"><b>pkg/server → gRPC / JSON</b> <span class="where">interface · OHS</span>
+          <p>Стримит внешним gRPC-клиентам и/или пишет отфильтрованный, редактированный JSON
+          на диск через <span class="mono">pkg/exporter</span>.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Ключевые находки</h2>
+      <span class="eyebrow">не только «как устроено», но и «где болит»</span>
+    </div>
+    <div class="grid2">
+      <div class="card crit">
+        <h3>pkg/aggregator — мёртвый код</h3>
+        <p>Механизм агрегации событий полностью встроен в конвейер, но <code>handleEvent()</code>
+        содержит только <code>default</code>-ветку — каждое событие пересылается без изменений.
+        Подтверждено <b>трижды независимо</b> (ручная проверка + 2 research-прохода).</p>
+      </div>
+      <div class="card warn">
+        <h3>Асимметрия привилегий</h3>
+        <p>Агент — <code>privileged: true</code> на ноде, но read-only в k8s RBAC. Оператор —
+        без привилегий на ноде, но CRUD-доступ и владение определениями CRD. Инверсия по двум
+        осям одновременно.</p>
+      </div>
+      <div class="card warn">
+        <h3>matchPIDs: writer/reader асимметрия</h3>
+        <p>Go может записать несколько PID-условий подряд; C-читатель — не цикл, а одно
+        <code>if</code>, читает ровно одну запись. Найдено чтением исходников рядом,
+        не подтверждено запуском.</p>
+      </div>
+      <div class="card ok">
+        <h3>Честная модель угроз</h3>
+        <p>«No security observability data from a root-compromised node can be considered
+        trustworthy» — проект прямо признаёт границу своих гарантий, а не маскирует её.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Суть — метод Фейнмана</h2>
+      <span class="eyebrow">объяснение без жаргона</span>
+    </div>
+    <div class="feynman-box">
+      <p>Сервер — это дом, процессы в контейнерах — комнаты со своими жильцами. Нужно знать,
+      кто заходит куда, и если кто-то хозяйничает не там — остановить сразу, а не после.</p>
+      <p><b>Камера + запись</b>, которую смотрят вечером — узнаёшь о краже вечером.
+      <b>Охранник</b>, обыскивающий вообще всех — ловит воров, но и мама, и почтальон стоят
+      в очереди. <b>Умный замок</b>, который за миллисекунду чувствует отмычку и не открывается —
+      решение принимается прямо в механизме двери, то есть в самом ядре ОС. Технология
+      называется eBPF. tetragon — третий вариант.</p>
+      <p class="punch"><b>Цимес одной фразой:</b> обычно «следить за всем» и «мгновенно
+      останавливать плохое» — два разных, дорогих инструмента. У tetragon оба свойства
+      получаются из одной и той же вещи — решения, вынесенного внутрь самого ядра.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Метод «2 мозга»</h2>
+      <span class="eyebrow">независимые прочтения + сверка</span>
+    </div>
+    <p class="lead">Там, где цена независимого подтверждения выше накладных расходов на второй
+      проход: два агента читают код заново, не видя друг друга и не видя черновиков этого текста,
+      затем результаты сверяются построчно.</p>
+    <table class="tbl">
+      <tr><th>Раунд</th><th>Метод</th><th>Что покрыто</th></tr>
+      <tr><td class="mono">1–2</td><td><span class="pill ok">2 мозга</span></td><td>нарратив в стиле Карпати + 5 диаграмм Mermaid к нему</td></tr>
+      <tr><td class="mono">3–4</td><td><span class="pill warn">одиночный проход</span></td><td>переносимость ядер, агрегация, VM-тесты, деплой, формат байткода</td></tr>
+      <tr><td class="mono">5</td><td><span class="pill ok">2 мозга</span></td><td>5 диаграмм к раунду 3–4 — самая высокая сходимость за сессию</td></tr>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>⬡ tetragon — архитектурный атлас</span>
+    <span>
+      <a href="https://github.com/nuculo/tetragon/tree/main/wiki" target="_blank" rel="noopener">полная вики ↗</a>
+      &nbsp;·&nbsp;
+      <a href="https://claude.ai/code/artifact/6f8340ef-67f6-46ea-aa66-a165b4520aa5" target="_blank" rel="noopener">интерактивный HLD-артефакт ↗</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/cilium/tetragon" target="_blank" rel="noopener">cilium/tetragon ↗</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
