@@ -145,6 +145,16 @@
   .card.crit { border-left: 3px solid var(--crit); }
   .card.warn { border-left: 3px solid var(--warn); }
   .card.ok { border-left: 3px solid var(--ok); }
+  .card.core { border-left: 3px solid var(--accent); }
+  .card.support { border-left: 3px solid var(--warn); }
+  .card.generic { border-left: 3px solid var(--ink-3); }
+  .card.port { border-left: 3px solid var(--ok); }
+  .card .kind { font-family: var(--f-mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--ink-3); margin: -2px 0 8px; }
+  .ddd-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 20px; font-size: 13px;
+    color: var(--ink-2); font-family: var(--f-mono); }
+  .ddd-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .ddd-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
   .card h3 { font-size: 15.5px; font-family: var(--f-mono); font-weight: 660; margin-bottom: 6px; }
   .card p { margin: 0; color: var(--ink-2); font-size: 14.5px; }
   .card code { font-family: var(--f-mono); font-size: 12.5px; background: var(--plate);
@@ -276,6 +286,79 @@
 <section>
   <div class="wrap">
     <div class="sec-head">
+      <h2>8 bounded context'ов</h2>
+      <span class="eyebrow">стратегическая DDD-классификация</span>
+    </div>
+    <div class="ddd-legend">
+      <span><i style="background:var(--accent)"></i>core domain</span>
+      <span><i style="background:var(--warn)"></i>supporting domain</span>
+      <span><i style="background:var(--ink-3)"></i>generic subdomain</span>
+      <span><i style="background:var(--ok)"></i>interface / port</span>
+    </div>
+    <div class="grid2">
+      <div class="card support">
+        <h3>Kernel Event Ingestion</h3>
+        <div class="kind">supporting domain</div>
+        <p>Владеет eBPF-программами и циклом чтения userspace: поднимает сырые
+        события (execve, fork, exit, kprobe) из ring/perf buffer'а в типизированные
+        Go-события. <code>pkg/observer</code>, <code>pkg/sensors</code>, <code>bpf/*.c</code>.</p>
+      </div>
+      <div class="card support">
+        <h3>Tracing Policy</h3>
+        <div class="kind">supporting domain</div>
+        <p>Компилирует пользовательскую политику (CRD/YAML) в байткод селекторов
+        ядра — «движок правил» системы. <code>pkg/tracingpolicy</code>,
+        <code>pkg/selectors</code>, <code>pkg/policyfilter</code>.</p>
+      </div>
+      <div class="card core">
+        <h3>Process Domain</h3>
+        <div class="kind">core domain</div>
+        <p>Главный агрегат всей системы — дерево живых процессов в памяти с GC,
+        обогащённое credentials, namespaces и метаданными пода.
+        <code>pkg/process</code> (<code>ProcessInternal</code>), <code>pkg/eventcache</code>.</p>
+      </div>
+      <div class="card generic">
+        <h3>K8s Integration</h3>
+        <div class="kind">generic subdomain</div>
+        <p>Anti-corruption layer между Kubernetes API и доменом процессов —
+        переводит <code>corev1.Pod</code> в собственные <code>tetragon.Pod</code>.
+        <code>pkg/k8s</code>, <code>pkg/watcher</code>, <code>pkg/manager</code>.</p>
+      </div>
+      <div class="card port">
+        <h3>API / Application</h3>
+        <div class="kind">interface · open host service</div>
+        <p>Единственный поддерживаемый вход/выход агента. Переводит сырые
+        сообщения ядра в published language (<code>tetragon.*</code> proto) и
+        раздаёт по gRPC. <code>pkg/server</code>, <code>pkg/grpc</code>.</p>
+      </div>
+      <div class="card generic">
+        <h3>Export Pipeline</h3>
+        <div class="kind">generic subdomain</div>
+        <p>Downstream-потребитель API-контекста — переигрывает тот же поток
+        <code>GetEvents</code> in-process, пишет отфильтрованный JSON на диск.
+        <code>pkg/exporter</code>, <code>pkg/fieldfilters</code>.</p>
+      </div>
+      <div class="card generic">
+        <h3>Operator</h3>
+        <div class="kind">generic subdomain · отдельный деплоймент</div>
+        <p>Отдельный бинарь, cluster-scoped, с leader election. Регистрирует CRD
+        и реконсайлит только PodInfo — реконсиляция TracingPolicy переехала в сам
+        агент, per-node.</p>
+      </div>
+      <div class="card port">
+        <h3>tetra CLI</h3>
+        <div class="kind">interface · client</div>
+        <p>Тонкий gRPC-клиент плюс Linux-only команды локальной диагностики
+        хоста, часть из которых работает без единого запущенного агента (раздел
+        «tetra CLI» ниже).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
       <h2>Сквозной путь execve</h2>
       <span class="eyebrow">от ядра до JSON</span>
     </div>
@@ -357,6 +440,43 @@
         gRPC-экспорта.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>DDD-смелы</h2>
+      <span class="eyebrow">7 находок каталога</span>
+    </div>
+    <table class="tbl">
+      <tr><th>Смел</th><th>Суть</th></tr>
+      <tr><td class="mono">naming-collision «Manager»</td><td><code>sensors.Manager</code>, <code>manager.ControllerManager</code>, <code>grpc.ProcessManager</code> — три несвязанных типа с одним именем.</td></tr>
+      <tr><td class="mono">leaky published language</td><td><code>tetragon.Process</code> (wire DTO) вложен прямо внутрь <code>ProcessInternal</code> — публичный контракт и внутренний агрегат почти неразличимы.</td></tr>
+      <tr><td class="mono">pervasive global</td><td><code>pkg/option.Config</code> — сквозной singleton, читаемый напрямую почти каждым контекстом вместо внедряемой зависимости.</td></tr>
+      <tr><td class="mono">два «filter»</td><td><code>pkg/selectors</code> (kernel-side, время компиляции) и <code>pkg/filters</code> (userspace, время запроса) — общее слово для разных механизмов.</td></tr>
+      <tr><td class="mono">граница Operator сместилась</td><td>Реконсиляция TracingPolicy переехала в агент; у оператора осталась только регистрация CRD и PodInfo.</td></tr>
+      <tr><td class="mono">эволюция published language</td><td><code>events.proto</code> резервирует tag'и удалённых со временем типов событий.</td></tr>
+      <tr><td class="mono">мёртвый код <code>pkg/aggregator</code></td><td>См. «Ключевые находки» выше — подтверждено трижды независимо.</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Углублённые темы</h2>
+      <span class="eyebrow">раунды 3–4 · одиночные проходы</span>
+    </div>
+    <table class="tbl">
+      <tr><th>Тема</th><th>Кратко</th></tr>
+      <tr><td class="mono">Переносимость ядер</td><td>Один <code>.o</code>-файл работает от 4.19 до bpf-next: CO-RE-релокация (BTF) чинит раскладку структур, отдельный набор скомпилированных вариантов чинит набор возможностей — два независимых механизма.</td></tr>
+      <tr><td class="mono">VM-тестирование</td><td>Матрица из 10 версий ядра в QEMU; мока eBPF не существует — разница только в том, на каком ядре запущен один и тот же код.</td></tr>
+      <tr><td class="mono">Деплой и модель угроз</td><td><code>privileged: true</code> без альтернативы; проект честно признаёт, что root на ноде убивает все гарантии целиком.</td></tr>
+      <tr><td class="mono">Формат байткода</td><td>Точная побайтовая раскладка селекторов (<code>index/op/vallen/type/value</code>), с рабочим hex-примером и находкой про <code>matchPIDs</code>.</td></tr>
+    </table>
+    <p class="lead" style="margin-top:16px;font-size:14px">Полные разборы всех
+      четырёх тем — в <a href="https://github.com/nuculo/tetragon/tree/main/wiki/Arch" target="_blank" rel="noopener">wiki/Arch</a>.</p>
   </div>
 </section>
 
