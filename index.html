@@ -6,7 +6,7 @@
 <title>tetragon — архитектурное исследование в терминах DDD</title>
 <meta name="description" content="Разбор cilium/tetragon (eBPF security observability для Kubernetes): карта bounded context'ов, метод «2 мозга», путь события execve сквозь систему, побайтовый формат BPF-байткода, находка про мёртвый код агрегатора.">
 <meta property="og:title" content="tetragon — архитектурное исследование">
-<meta property="og:description" content="5 раундов исследования методом «2 мозга»: DDD-карта, диаграммы, переносимость между ядрами, VM-тесты, модель угроз, побайтовый формат селекторов.">
+<meta property="og:description" content="6 раундов исследования методом «2 мозга»: DDD-карта, диаграммы, переносимость между ядрами, VM-тесты, модель угроз, побайтовый формат селекторов, mTLS, вложенные cgroup.">
 <meta property="og:type" content="article">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232454c7'/><path d='M3 8h4l1.5-3L10 12l1.5-4H13' stroke='%23fff' stroke-width='1.4' fill='none'/></svg>">
 <style>
@@ -204,16 +204,16 @@
     <div class="kicker" style="margin-top:14px"><b>Внешний проект</b> · архитектурное исследование <span style="color:var(--ink-3)">/ cilium/tetragon</span></div>
     <h1>tetragon <span class="dim">— eBPF · Go · DDD</span></h1>
     <p class="subtitle">Security observability и runtime enforcement для Kubernetes на eBPF.
-      Пять раундов исследования кодовой базы: карта bounded context'ов в терминах Domain-Driven
-      Design, сквозной путь события через систему, побайтовый формат BPF-байткода — и метод
-      «2 мозга»: независимые прочтения кода, сверенные друг с другом.</p>
+      Шесть раундов исследования кодовой базы: карта bounded context'ов в терминах Domain-Driven
+      Design, сквозной путь события через систему, побайтовый формат BPF-байткода, mTLS,
+      вложенные cgroup — и метод «2 мозга»: независимые прочтения кода, сверенные друг с другом.</p>
     <div class="chips">
       <span class="chip hot">метод «2 мозга»</span>
-      <span class="chip">5 раундов исследования</span>
+      <span class="chip">6 раундов исследования</span>
       <span class="chip">DDD · bounded contexts</span>
       <span class="chip">HLD в ANSI</span>
       <span class="chip">метод Фейнмана</span>
-      <span class="chip">16 280 файлов</span>
+      <span class="chip">16 293 файла</span>
     </div>
   </div>
 </header>
@@ -222,7 +222,7 @@
   <div class="wrap">
     <div class="stats">
       <div class="stat"><div class="v">8</div><div class="k">bounded context'ов</div></div>
-      <div class="stat"><div class="v">5</div><div class="k">раундов исследования</div></div>
+      <div class="stat"><div class="v">6</div><div class="k">раундов исследования</div></div>
       <div class="stat"><div class="v">10</div><div class="k">диаграмм Mermaid</div></div>
       <div class="stat"><div class="v">3×</div><div class="k">находка подтверждена независимо</div></div>
       <div class="stat"><div class="v">1</div><div class="k">core domain</div></div>
@@ -343,6 +343,19 @@
         <p>«No security observability data from a root-compromised node can be considered
         trustworthy» — проект прямо признаёт границу своих гарантий, а не маскирует её.</p>
       </div>
+      <div class="card warn">
+        <h3>mTLS не покрывает метрики и health</h3>
+        <p><code>pkg/certloader</code> используется ровно в одном месте — основном gRPC API.
+        Prometheus-эндпоинт и health-check всегда открытым текстом, без флага и без кода,
+        который мог бы это изменить.</p>
+      </div>
+      <div class="card warn">
+        <h3>Два несвязанных rate limiter'а</h3>
+        <p>Per-selector действие <code>RateLimit</code> (дебаунс по timestamp) и
+        <code>cgroup_rate()</code> (скользящее окно для execve/fork) — независимые механизмы.
+        А <code>pkg/ratelimit</code> — вообще третья, не относящаяся к делу вещь: троттлинг
+        gRPC-экспорта.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -382,6 +395,7 @@
       <tr><td class="mono">1–2</td><td><span class="pill ok">2 мозга</span></td><td>нарратив в стиле Карпати + 5 диаграмм Mermaid к нему</td></tr>
       <tr><td class="mono">3–4</td><td><span class="pill warn">одиночный проход</span></td><td>переносимость ядер, агрегация, VM-тесты, деплой, формат байткода</td></tr>
       <tr><td class="mono">5</td><td><span class="pill ok">2 мозга</span></td><td>5 диаграмм к раунду 3–4 — самая высокая сходимость за сессию</td></tr>
+      <tr><td class="mono">6</td><td><span class="pill warn">одиночный проход</span></td><td>rate limiting, mTLS, вложенные cgroup, CLI tetra, LSM/fmod_ret/USDT</td></tr>
     </table>
   </div>
 </section>
